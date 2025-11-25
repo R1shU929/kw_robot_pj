@@ -1,15 +1,13 @@
 import './App.css'
 
-import MainPage from './pages/mainPage/mainPage';
+import MainPage from './pages/mainPage/mainPage'
 
 function App() {
-
-  return (
-    <div> 
-      <MainPage/>
-      
-    </div>
-  );
+	return (
+		<div>
+			<MainPage />
+		</div>
+	)
 }
 
 export default App
