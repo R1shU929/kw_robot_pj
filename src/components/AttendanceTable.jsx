@@ -75,11 +75,15 @@ const Table = styled.table`
 const Th = styled.th`
 	border: 1px solid #ccc;
 	padding: 16px;
+	text-align: center;
+  vertical-align: middle;
 	background: #fefefe;
 `
 
 const Td = styled.td`
 	border: 1px solid #ccc;
 	height: 60px;
+	text-align: center;
+  vertical-align: middle;
 	background: #f7f7f7;
 `
