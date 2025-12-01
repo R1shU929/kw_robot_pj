@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>face-api.js Face Angle (대표 얼굴 추적)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+
+  <!-- face-api.js -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    #status {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      padding: 6px 10px;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 14px;
+      z-index: 10;
+    }
+
+    video,
+    canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="status">페이지 로딩 중...</div>
+
+<script>
+  // 전역 변수
+  let frameCount = 0;
+  let isLandscape = false;
+
+  let video, canvas, ctx, websocket;
+  let lastDetections = [];
+  let lastMainBox = null;
+  let lastAngle = 0;
+
+  let faceMatcher = null;
+  let currentTarget = null;   // 지금 따라가고 있는 사람 이름 (대표)
+
+  // 방향 업데이트
+  function updateOrientation() {
+    const angle = window.orientation;
+    isLandscape = (angle === 90 || angle === -90);
+  }
+  window.addEventListener("orientationchange", updateOrientation);
+  updateOrientation();
+
+  // 각도 스무딩
+  function smoothAngle(raw) {
+    const a = 0.2; // 0~1, 클수록 빠르게 따라감
+    lastAngle = a * raw + (1 - a) * lastAngle;
+    return lastAngle;
+  }
+
+  window.addEventListener("load", async () => {
+    const statusEl = document.getElementById("status");
+
+    function logStatus(msg) {
+      console.log(msg);
+      statusEl.textContent = msg;
+    }
+
+    if (!window.faceapi) {
+      alert("face-api.js 로드 실패 (faceapi 변수를 찾을 수 없음)");
+      logStatus("face-api.js 로드 실패");
+      return;
+    }
+
+    const faceapi = window.faceapi;
+    const WS_URL = window.location.origin.replace(/^http/, "ws");
+
+    // 모델 로딩
+    async function loadModels() {
+      const MODEL_URL = "/models";
+      logStatus("모델 로딩 중...");
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+      logStatus("모델 로딩 완료");
+    }
+
+    // 라벨 얼굴 로딩
+    async function loadLabeledFaces() {
+      const people = ["jumi", "cho", "yun"];
+      const labeled = [];
+
+      for (const person of people) {
+        const descriptors = [];
+
+        for (let i = 1; i <= 5; i++) {
+          const imgUrl = `/faces/${person}/${i}.jpg`;
+          try {
+            const img = await faceapi.fetchImage(imgUrl);
+            const det = await faceapi
+              .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions())
+              .withFaceLandmarks()
+              .withFaceDescriptor();
+
+            if (!det) {
+              console.warn(`${person}/${i}.jpg: 얼굴 찾지 못함`);
+              continue;
+            }
+
+            descriptors.push(det.descriptor);
+            console.log(`${person}/${i}.jpg 등록 완료`);
+          } catch (e) {
+            console.warn(`이미지 로드 실패: ${imgUrl}`, e);
+          }
+        }
+
+        if (descriptors.length > 0) {
+          labeled.push(new faceapi.LabeledFaceDescriptors(person, descriptors));
+        } else {
+          console.warn(`${person}: 등록된 descriptor 없음`);
+        }
+      }
+
+      logStatus(`등록된 사람 수: ${labeled.length}명`);
+      return labeled;
+    }
+
+    
+    // 캔버스 크기 재조정 함수 (세로/가로 전환 시)
+    function resizeCanvasToVideo() {
+      if (!video || !canvas) return;
+
+      // iOS에서 videoWidth/Height가 0 나오는 경우 대비
+      const vw = video.videoWidth || 640;
+      const vh = video.videoHeight || 480;
+
+      canvas.width = vw;
+      canvas.height = vh;
+      console.log("canvas resized:", vw, vh);
+    }
+
+    // 카메라 초기화
+    async function initCamera() {
+      logStatus("카메라 요청 중...");
+
+      video = document.createElement("video");
+      video.autoplay = true;
+      video.playsInline = true;
+      document.body.appendChild(video);
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+
+        video.srcObject = stream;
+
+        await new Promise((resolve) => {
+          video.onloadedmetadata = () => {
+            video.play();
+            resolve();
+          };
+        });
+
+        canvas = document.createElement("canvas");
+        document.body.appendChild(canvas);
+        ctx = canvas.getContext("2d");
+
+        resizeCanvasToVideo(); // 최초 1회
+
+        // 아이폰에서 회전하면 약간 딜레이 후 다시 맞춰주기
+        window.addEventListener("orientationchange", () => {
+          setTimeout(() => {
+            resizeCanvasToVideo();
+          }, 500); // 0.5초 후 재측정
+        });
+
+        logStatus("카메라 준비 완료");
+      } catch (err) {
+        alert("카메라 에러: " + err.message);
+        logStatus("카메라 에러: " + err.message);
+        throw err;
+      }
+    }
+
+    // WebSocket 초기화
+    async function initWebSocket() {
+      logStatus("WebSocket 연결 시도 중...");
+      try {
+        websocket = new WebSocket(WS_URL);
+
+        websocket.onopen = () => logStatus("WebSocket 연결 완료");
+        websocket.onerror = () => logStatus("WebSocket 에러 (그래도 얼굴 박스는 뜸)");
+        websocket.onclose = () => console.log("WebSocket 닫힘");
+      } catch (e) {
+        console.log("WebSocket 예외:", e);
+      }
+    }
+
+    // 메인 루프
+    async function loop() {
+      frameCount++;
+
+      if (!video || !canvas || !ctx) {
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      // 2프레임마다 새로 detect
+      if (frameCount % 2 === 0) {
+        const detectorOptions = new faceapi.TinyFaceDetectorOptions({
+          inputSize: 416,
+          scoreThreshold: 0.2
+        });
+
+        const detections = await faceapi
+          .detectAllFaces(video, detectorOptions)
+          .withFaceLandmarks()
+          .withFaceDescriptors();
+
+        lastDetections = detections;
+      }
+
+      // 배경: 비디오 그대로 그리기
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      if (!lastDetections || lastDetections.length === 0) {
+        logStatus("얼굴 없음 (카메라는 정상)");
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      // 모든 얼굴에 얇은 초록 박스 + 이름 표시
+      let detectionsWithName = [];
+
+      for (const det of lastDetections) {
+        const box = det.detection.box;
+        const descriptor = det.descriptor;
+
+        let personName = "unknown";
+        if (faceMatcher && descriptor) {
+          const best = faceMatcher.findBestMatch(descriptor);
+          personName = best.label;
+        }
+
+        det.personName = personName;
+        detectionsWithName.push(det);
+
+        // 전체 얼굴 → 얇은 초록 박스
+        ctx.strokeStyle = "rgba(0,255,0,0.6)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+        ctx.fillStyle = "lime";
+        ctx.font = "16px sans-serif";
+        ctx.fillText(personName, box.x, box.y - 5);
+      }
+
+      // 대표 얼굴(mainDet) 선택 로직
+      let mainDet = null;
+
+      // 등록된 사람들만
+      const knownDetections = detectionsWithName.filter(
+        d => d.personName && d.personName !== "unknown"
+      );
+
+      // currentTarget이 아직 화면에 있으면 그 사람 계속
+      if (currentTarget && knownDetections.length > 0) {
+        const stillHere = knownDetections.find(d => d.personName === currentTarget);
+        if (stillHere) {
+          mainDet = stillHere;
+        }
+      }
+
+      // 없으면, 등록된 사람 중 화면 중앙에 가장 가까운 사람
+      if (!mainDet && knownDetections.length > 0) {
+        let best = null;
+
+        for (const d of knownDetections) {
+          const b = d.detection.box;
+          const centerX = b.x + b.width / 2;
+          const dx = Math.abs(centerX - canvas.width / 2);
+
+          if (!best || dx < best.dx) {
+            best = { det: d, dx };
+          }
+        }
+        mainDet = best.det;
+      }
+
+      // 그래도 없으면 (다 unknown) → 가장 큰 얼굴
+      if (!mainDet && detectionsWithName.length > 0) {
+        mainDet = detectionsWithName.reduce((big, d) => {
+          const b1 = big.detection.box;
+          const b2 = d.detection.box;
+          const area1 = b1.width * b1.height;
+          const area2 = b2.width * b2.height;
+          return area2 > area1 ? d : big;
+        }, detectionsWithName[0]);
+      }
+
+      // 대표가 등록된 사람이라면 currentTarget 업데이트
+      if (mainDet && mainDet.personName !== "unknown") {
+        currentTarget = mainDet.personName;
+      }
+
+      // 대표 얼굴 기준으로 각도 계산 + 두꺼운 초록 박스
+      if (mainDet) {
+        const baseBox = mainDet.detection.box;
+
+        // 대표 얼굴 주변 살짝 넓게 잡기
+        let padLeftRatio   = 0.08;
+        let padRightRatio  = 0.08;
+        let padTopRatio    = 0.06;
+        let padBottomRatio = 0.15;
+
+        let x = baseBox.x - baseBox.width  * padLeftRatio;
+        let y = baseBox.y - baseBox.height * padTopRatio;
+        let w = baseBox.width  * (1 + padLeftRatio + padRightRatio);
+        let h = baseBox.height * (1 + padTopRatio + padBottomRatio);
+
+        // 박스 위치 스무딩 (부드럽게)
+        const boxSmoothA = 0.3;
+        if (!lastMainBox) {
+          lastMainBox = { x, y, w, h };
+        } else {
+          lastMainBox = {
+            x: boxSmoothA * x + (1 - boxSmoothA) * lastMainBox.x,
+            y: boxSmoothA * y + (1 - boxSmoothA) * lastMainBox.y,
+            w: boxSmoothA * w + (1 - boxSmoothA) * lastMainBox.w,
+            h: boxSmoothA * h + (1 - boxSmoothA) * lastMainBox.h,
+          };
+        }
+
+        x = lastMainBox.x;
+        y = lastMainBox.y;
+        w = lastMainBox.w;
+        h = lastMainBox.h;
+
+        // 화면 밖으로 안 나가게
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x + w > canvas.width)  w = canvas.width  - x;
+        if (y + h > canvas.height) h = canvas.height - y;
+
+        // 대표 얼굴 중심 x
+        const centerX = x + w / 2;
+        const dx = centerX - canvas.width / 2;
+
+        const normalizedX = dx / (canvas.width / 2);
+        const MAX_ANGLE = 60;
+        const rawAngle = normalizedX * MAX_ANGLE;
+        const angleDeg = smoothAngle(rawAngle);
+
+        const mainName = mainDet.personName || "unknown";
+
+        logStatus(`대표: ${mainName} / angle: ${angleDeg.toFixed(1)}° / 감지: ${lastDetections.length}명`);
+
+        // 대표 얼굴을 따라오는 "두꺼운 진한 초록 박스"
+        ctx.strokeStyle = "lime";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, y, w, h);
+
+        // WebSocket으로 대표 얼굴 정보 보내기
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          websocket.send(JSON.stringify({
+            type: "angle",
+            angle: angleDeg,
+            person: mainName,
+            count: lastDetections.length,
+            ts: Date.now()
+          }));
+        }
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    // 실행 순서
+    try {
+      logStatus("초기화 시작");
+      await loadModels();
+
+      const labeled = await loadLabeledFaces();
+      faceMatcher = new faceapi.FaceMatcher(labeled, 0.65);
+
+      await initCamera();
+      await initWebSocket();
+
+      logStatus("실행 중 (여러 명 + 대표 1명 초록 박스 추적)");
+      loop();
+    } catch (e) {
+      console.error(e);
+      logStatus("초기화 중 오류: " + e.message);
+    }
+  });
+</script>
+
+</body>
+</html>
