@@ -169,7 +169,7 @@ const SemiTitleBar = styled.div`
   align-items: center;
   background-color: #b10058;
   height: 37px;
-  padding-left: 50px;
+  padding-left: 20px;
   position: sticky;
   top: 80px;
   z-index: 9;
@@ -187,7 +187,7 @@ const SemiTitle = styled.h2`
 `
 
 const ContentWrapper = styled.div`
-  padding: 120px 0 40px;
+  padding: 40px 0 40px;
   display: flex;
   justify-content: center;
 `
