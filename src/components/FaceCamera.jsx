@@ -6,7 +6,7 @@ const MODEL_URL = '/models'
 
 // public/faces 밑에 있는 사람 폴더 이름들로 바꿔줘
 // 예: public/faces/jumi/1.jpg ... 이면 'jumi'
-const LABELS = ['jumi', 'cho', 'yun']
+const LABELS = ['jumi', 'cho', 'yun', "bae"]
 
 function FaceCamera({ onRecognized }) {
   const videoRef = useRef(null)
