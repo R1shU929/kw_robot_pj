@@ -4,15 +4,16 @@ import * as faceapi from 'face-api.js'
 
 const MODEL_URL = '/models'
 
-// public/faces 밑에 있는 사람 폴더 이름들로 바꿔줘
-// 예: public/faces/jumi/1.jpg ... 이면 'jumi'
-const LABELS = ['jumi', 'cho', 'yun', "bae"]
+// public/faces 폴더의 사람 이름들
+const LABELS = ['jumi', 'cho', 'yun', 'bae']
 
 function FaceCamera({ onRecognized }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const [status, setStatus] = useState('모델 로딩 중...')
-  const recognizedOnceRef = useRef(false)
+
+  // ⭐ 재인식을 위한 throttle 시간 저장
+  const lastRecognizedTimeRef = useRef(0)
 
   useEffect(() => {
     let stream
@@ -23,7 +24,7 @@ function FaceCamera({ onRecognized }) {
       await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL)
       await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL)
       await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
-      setStatus('모델 로딩 완료, 카메라를 준비 중입니다.')
+      setStatus('모델 로딩 완료, 카메라 준비 중...')
     }
 
     async function loadLabeledImages() {
@@ -36,6 +37,7 @@ function FaceCamera({ onRecognized }) {
           const imgUrl = `/faces/${label}/${i}.jpg`
           try {
             const img = await faceapi.fetchImage(imgUrl)
+
             const detection = await faceapi
               .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions())
               .withFaceLandmarks()
@@ -65,7 +67,7 @@ function FaceCamera({ onRecognized }) {
         const labeledDescriptors = await loadLabeledImages()
         const faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6)
 
-        // 카메라 열기
+        // ⭐ 카메라 실행
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' },
           audio: false,
@@ -77,8 +79,8 @@ function FaceCamera({ onRecognized }) {
         videoRef.current.onloadedmetadata = () => {
           const video = videoRef.current
           if (!video) return
-
           video.play()
+
           setStatus('카메라 켜짐 – 얼굴을 화면에 맞춰주세요.')
 
           const canvas = canvasRef.current
@@ -106,27 +108,36 @@ function FaceCamera({ onRecognized }) {
               displaySize
             )
 
-            const context = canvas.getContext('2d')
-            context.clearRect(0, 0, canvas.width, canvas.height)
+            const ctx = canvas.getContext('2d')
+            ctx.clearRect(0, 0, canvas.width, canvas.height)
 
             faceapi.draw.drawDetections(canvas, resizedDetections)
 
             resizedDetections.forEach((d) => {
               const bestMatch = faceMatcher.findBestMatch(d.descriptor)
+
               const box = d.detection.box
               const drawBox = new faceapi.draw.DrawBox(box, {
                 label: bestMatch.toString(),
               })
               drawBox.draw(canvas)
 
-              if (
-                bestMatch.label !== 'unknown' &&
-                !recognizedOnceRef.current &&
-                onRecognized
-              ) {
-                recognizedOnceRef.current = true
-                onRecognized(bestMatch.label)
-                setStatus(`얼굴 인식 완료: ${bestMatch.label}`)
+              // ==========================================================
+              // ⭐ 변경된 재인식 방식: 1.5초 마다 재인식 허용
+              // ⭐ 그리고 label에서 거리값 제거 (출석 오류 해결 핵심)
+              // ==========================================================
+              if (bestMatch.label !== 'unknown') {
+                const now = Date.now()
+
+                if (now - lastRecognizedTimeRef.current > 1500) {
+                  lastRecognizedTimeRef.current = now
+
+                  // 🎯 label 정제: "yun (0.43)" → "yun"
+                  const pureLabel = bestMatch.label.split(' ')[0]
+
+                  onRecognized?.(pureLabel)
+                  setStatus(`얼굴 인식됨: ${pureLabel}`)
+                }
               }
             })
           }, 500)
@@ -139,6 +150,7 @@ function FaceCamera({ onRecognized }) {
 
     start()
 
+    // cleanup
     return () => {
       if (intervalId) clearInterval(intervalId)
       if (stream) {
