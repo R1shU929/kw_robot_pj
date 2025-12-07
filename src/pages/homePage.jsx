@@ -49,11 +49,9 @@ function HomePage() {
 
 		console.log('🎥 얼굴 인식됨:', { code, koreanName, newCount })
 
-		// ============================================================
-		// ⭐ 첫 인식 → 단 한 번만 출석 API 호출
-		// ============================================================
+		//  첫 인식 → 단 한 번만 출석 API 호출
 		if (!attendanceSent) {
-			setAttendanceSent(true) // 🔒 즉시 LOCK, API 중복 호출 절대 불가
+			setAttendanceSent(true) // 즉시 LOCK, API 중복 호출 절대 불가
 
 			setPopupText(`${koreanName}님 얼굴이 인식되었습니다. 출석 요청 중...`)
 			setShowPopup(true)
@@ -82,21 +80,17 @@ function HomePage() {
 				setShowPopup(true)
 			}
 
-			return // 🔥 첫 인식 처리 완료 후 즉시 종료
+			return // 첫 인식 처리 완료 후 즉시 종료
 		}
 
-		// ============================================================
-		// ⭐ 두 번째 인식
-		// ============================================================
+		//  두 번째 인식
 		if (newCount === 2) {
 			setPopupText('15분 내 복귀하지 않으면 결석 처리됩니다.')
 			setShowPopup(true)
 			return
 		}
 
-		// ============================================================
-		// ⭐ 세 번째 인식
-		// ============================================================
+		//  세 번째 인식
 		if (newCount === 3) {
 			setPopupText('출석이 유지됩니다. 자리로 돌아가세요.')
 			setShowPopup(true)
