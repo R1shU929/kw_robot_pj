@@ -44,6 +44,12 @@
   <div id="status">페이지 로딩 중...</div>
 
 <script>
+  // JS 에러가 나면 화면에 바로 표시
+  window.onerror = function(message, source, lineno, colno, error) {
+    const statusEl = document.getElementById('status');
+    statusEl.textContent = 'JS 오류: ' + message;
+  };
+
   // 전역 변수
   let frameCount = 0;
   let isLandscape = false;
@@ -54,7 +60,15 @@
   let lastAngle = 0;
 
   let faceMatcher = null;
-  let currentTarget = null;   // 지금 따라가고 있는 사람 이름 (대표)
+  let currentTarget = null;  // 지금 따라가고 있는 사람 이름 (대표)
+
+  // 상태 표시용
+  const statusEl = document.getElementById("status");
+  function logStatus(msg) {
+    console.log(msg);
+    statusEl.textContent = msg;
+  }
+
 
   // 방향 업데이트
   function updateOrientation() {
@@ -66,19 +80,13 @@
 
   // 각도 스무딩
   function smoothAngle(raw) {
-    const a = 0.2; // 0~1, 클수록 빠르게 따라감
+    const a = 0.3; // 0~1, 클수록 빠르게 따라감
     lastAngle = a * raw + (1 - a) * lastAngle;
     return lastAngle;
   }
 
+
   window.addEventListener("load", async () => {
-    const statusEl = document.getElementById("status");
-
-    function logStatus(msg) {
-      console.log(msg);
-      statusEl.textContent = msg;
-    }
-
     if (!window.faceapi) {
       alert("face-api.js 로드 실패 (faceapi 변수를 찾을 수 없음)");
       logStatus("face-api.js 로드 실패");
@@ -100,8 +108,7 @@
 
     // 라벨 얼굴 로딩
     async function loadLabeledFaces() {
-      const people = ['jumi', 'cho', 'yun', "bae"]
-
+      const people = ['jumi', 'cho', 'yun', "bae"];
       const labeled = [];
 
       for (const person of people) {
@@ -139,12 +146,10 @@
       return labeled;
     }
 
-    
     // 캔버스 크기 재조정 함수 (세로/가로 전환 시)
     function resizeCanvasToVideo() {
       if (!video || !canvas) return;
 
-      // iOS에서 videoWidth/Height가 0 나오는 경우 대비
       const vw = video.videoWidth || 640;
       const vh = video.videoHeight || 480;
 
@@ -187,11 +192,10 @@
 
         resizeCanvasToVideo(); // 최초 1회
 
-        // 아이폰에서 회전하면 약간 딜레이 후 다시 맞춰주기
         window.addEventListener("orientationchange", () => {
           setTimeout(() => {
             resizeCanvasToVideo();
-          }, 500); // 0.5초 후 재측정
+          }, 500);
         });
 
         logStatus("카메라 준비 완료");
@@ -265,7 +269,6 @@
         det.personName = personName;
         detectionsWithName.push(det);
 
-        // 전체 얼굴 → 얇은 초록 박스
         ctx.strokeStyle = "rgba(0,255,0,0.6)";
         ctx.lineWidth = 2;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
@@ -278,12 +281,10 @@
       // 대표 얼굴(mainDet) 선택 로직
       let mainDet = null;
 
-      // 등록된 사람들만
       const knownDetections = detectionsWithName.filter(
         d => d.personName && d.personName !== "unknown"
       );
 
-      // currentTarget이 아직 화면에 있으면 그 사람 계속
       if (currentTarget && knownDetections.length > 0) {
         const stillHere = knownDetections.find(d => d.personName === currentTarget);
         if (stillHere) {
@@ -291,7 +292,6 @@
         }
       }
 
-      // 없으면, 등록된 사람 중 화면 중앙에 가장 가까운 사람
       if (!mainDet && knownDetections.length > 0) {
         let best = null;
 
@@ -307,7 +307,6 @@
         mainDet = best.det;
       }
 
-      // 그래도 없으면 (다 unknown) → 가장 큰 얼굴
       if (!mainDet && detectionsWithName.length > 0) {
         mainDet = detectionsWithName.reduce((big, d) => {
           const b1 = big.detection.box;
@@ -318,16 +317,13 @@
         }, detectionsWithName[0]);
       }
 
-      // 대표가 등록된 사람이라면 currentTarget 업데이트
       if (mainDet && mainDet.personName !== "unknown") {
         currentTarget = mainDet.personName;
       }
 
-      // 대표 얼굴 기준으로 각도 계산 + 두꺼운 초록 박스
       if (mainDet) {
         const baseBox = mainDet.detection.box;
 
-        // 대표 얼굴 주변 살짝 넓게 잡기
         let padLeftRatio   = 0.08;
         let padRightRatio  = 0.08;
         let padTopRatio    = 0.06;
@@ -338,7 +334,6 @@
         let w = baseBox.width  * (1 + padLeftRatio + padRightRatio);
         let h = baseBox.height * (1 + padTopRatio + padBottomRatio);
 
-        // 박스 위치 스무딩 (부드럽게)
         const boxSmoothA = 0.3;
         if (!lastMainBox) {
           lastMainBox = { x, y, w, h };
@@ -356,42 +351,65 @@
         w = lastMainBox.w;
         h = lastMainBox.h;
 
-        // 화면 밖으로 안 나가게
         if (x < 0) x = 0;
         if (y < 0) y = 0;
         if (x + w > canvas.width)  w = canvas.width  - x;
         if (y + h > canvas.height) h = canvas.height - y;
 
-        // 대표 얼굴 중심 x
         const centerX = x + w / 2;
         const dx = centerX - canvas.width / 2;
 
         const normalizedX = dx / (canvas.width / 2);
-        const MAX_ANGLE = 60;
+
+        const MAX_ANGLE = 30;
         const rawAngle = normalizedX * MAX_ANGLE;
+
         const angleDeg = smoothAngle(rawAngle);
 
         const mainName = mainDet.personName || "unknown";
 
-        logStatus(`대표: ${mainName} / angle: ${angleDeg.toFixed(1)}° / 감지: ${lastDetections.length}명`);
+        const JS_DEAD_ZONE = 8;   
+        const SCALE = 0.6;        
+        const MAX_SEND = 30;      
 
-        // 대표 얼굴을 따라오는 "두꺼운 진한 초록 박스"
+        let sendAngle = angleDeg;
+
+        sendAngle = -sendAngle;
+
+        if (Math.abs(sendAngle) < JS_DEAD_ZONE) {
+          sendAngle = 0;
+        }
+
+        sendAngle = sendAngle * SCALE;
+
+        if (sendAngle >  MAX_SEND) sendAngle =  MAX_SEND;
+        if (sendAngle < -MAX_SEND) sendAngle = -MAX_SEND;
+
+        // 상태 표시
+        logStatus(
+          `대표: ${mainName}` +
+          ` / raw=${rawAngle.toFixed(1)}°` +
+          ` / smooth=${angleDeg.toFixed(1)}°` +
+          ` / send=${sendAngle.toFixed(1)}°` +
+          ` / 감지: ${lastDetections.length}명`
+        );
+
+        // 대표 얼굴 박스 그리기
         ctx.strokeStyle = "lime";
         ctx.lineWidth = 4;
         ctx.strokeRect(x, y, w, h);
 
-        // WebSocket으로 대표 얼굴 정보 보내기
+        // WebSocket으로 각도 전송
         if (websocket && websocket.readyState === WebSocket.OPEN) {
           websocket.send(JSON.stringify({
             type: "angle",
-            angle: angleDeg,
+            angle: sendAngle,  
             person: mainName,
             count: lastDetections.length,
             ts: Date.now()
           }));
         }
       }
-
       requestAnimationFrame(loop);
     }
 
@@ -414,6 +432,7 @@
     }
   });
 </script>
+
 
 </body>
 </html>
